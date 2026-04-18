@@ -102,11 +102,13 @@ def ee_to_block_pos(m, d):
 
     # Cartesian positions (x, y, z)
     block_pos = d.geom_xpos[block_id]
-    ee_pos = d.site_xpos[site_id]
 
-    # L2 Norm: sqrt((x2-x1)^2 + (y2-y1)^2 + (z2-z1)^2)
-    distance = np.linalg.norm(block_pos - ee_pos)
-    return float(distance)
+    site_name = "pinch_site"
+    sid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_SITE, site_name)
+    ee_pos = d.site_xpos[sid]   # world position (x, y, z)
+    
+    dist = block_pos - ee_pos
+    return dist
 
 if __name__ == "__main__":
     model = mujoco.MjModel.from_xml_path(str(MODEL))

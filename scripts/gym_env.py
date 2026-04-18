@@ -1,5 +1,5 @@
 import numpy as np
-from typing import Optional
+from typing import Optional, Callable
 
 import gymnasium as gym
 from gymnasium.envs.registration import register
@@ -8,6 +8,26 @@ import mujoco.viewer
 from mujoco_example import ee_to_block_pos, set_joints, get_joints
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_checker import check_env
+
+
+def linear_schedule(initial_value: float, final_value: float) -> Callable[[float], float]:
+    """
+    Linear learning rate schedule.
+
+    param initial_value: Initial learning rate.
+    return: schedule that computes
+      current learning rate depending on remaining progress
+    """
+    def func(progress_remaining: float) -> float:
+        """
+        Progress will decrease from 1 (beginning) to 0.
+
+        param progress_remaining:
+        return: current learning rate
+        """
+        return progress_remaining * (initial_value - final_value) + final_value
+
+    return func
 
 class ArmEnv(gym.Env):
     """
@@ -69,12 +89,11 @@ class ArmEnv(gym.Env):
         reward = 0.0
 
         # reward getting closer to the block
-        dist = ee_to_block_pos(self.model,self.data)
-        dist_change = dist - self.last_ee_to_block_dist
-        reward += -10 * dist_change
-        self.last_ee_to_block_dist = dist
-
-        reward = -dist
+        _,dist_norm = ee_to_block_pos(self.model,self.data) # on the order of 0.4
+        
+        reward += 20.0 * (self.last_ee_to_block_dist - dist_norm)
+        reward += -2.0 * dist_norm
+        self.last_ee_to_block_dist = dist_norm
 
         return reward
 
@@ -82,8 +101,8 @@ class ArmEnv(gym.Env):
         return False
     
     def _is_terminated(self):
-        dist = ee_to_block_pos(self.model,self.data)
-        if dist < 0.2:
+        _,dist_norm = ee_to_block_pos(self.model,self.data)
+        if dist_norm < 0.4:
             return True
         return False
     
@@ -92,6 +111,10 @@ class ArmEnv(gym.Env):
         Starts a new episode
         """
         super().reset(seed=seed)
+        self.iter_count = 0
+        self.model = mujoco.MjModel.from_xml_path('../kinova_gen3/rl_scene.xml')
+        self.data = mujoco.MjData(self.model)
+        self.last_ee_to_block_dist = ee_to_block_pos(self.model,self.data)
         obs = self._get_obs()
         info = self._get_info()
         return obs,info
@@ -129,7 +152,7 @@ class ArmEnv(gym.Env):
         truncated = self._is_truncated()
         terminated = self._is_terminated()
         if terminated:
-            reward += 10000
+            reward += 2000.0 * (200 - self.iter_count) / 200
 
         self.iter_count += 1
 
@@ -151,10 +174,12 @@ if __name__ == "__main__":
         "MultiInputPolicy",
         env,
         verbose=1,
+        learning_rate=linear_schedule(0.01,0.0003),
+        #learning_rate=0.001,
         tensorboard_log="../logs/ppo_kinova/"
     )
 
-    model.learn(total_timesteps=25_000)
+    model.learn(total_timesteps=1_000_000)
     model.save("kinova_test")
 
 
