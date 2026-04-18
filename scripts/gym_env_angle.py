@@ -8,7 +8,11 @@ import mujoco.viewer
 from mujoco_example import ee_to_block_pos, set_joints, get_joints
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_checker import check_env
+from scipy.spatial.transform import Rotation
 
+def rotm_to_euler(rotm):
+    rot = Rotation.from_matrix(rotm)
+    return rot.as_euler('zxy',degrees=False)
 
 def linear_schedule(initial_value: float, final_value: float) -> Callable[[float], float]:
     """
@@ -40,7 +44,7 @@ class ArmEnv(gym.Env):
         self.observation_space = gym.spaces.Dict(
             {
                 "ee_pos": gym.spaces.Box(-5, 5, shape=(3,), dtype=float),  # x,y,z
-                #"ee_rot": gym.spaces.Box(0, 2*np.pi, shape=(3,), dtype=float),  # roll,pitch,yaw
+                "ee_rot": gym.spaces.Box(-np.pi, np.pi, shape=(3,), dtype=float),  # rot_z,rot_x,rot_y
                 "target_pos": gym.spaces.Box(-5, 5, shape=(3,), dtype=float),  # x,y,z
                 #"target_rot": gym.spaces.Box(0, 2*np.pi, shape=(3,), dtype=float),  # roll,pitch,yaw
                 #"goal_pos": gym.spaces.Box(-1, 1, shape=(3,), dtype=float),  # x,y,z
@@ -59,10 +63,13 @@ class ArmEnv(gym.Env):
 
         self.model = mujoco.MjModel.from_xml_path('../kinova_gen3/rl_scene.xml')
         self.data = mujoco.MjData(self.model)
+        mujoco.mj_forward(self.model, self.data)
         self.iter_count = 0
 
         # attributes for reward func calculations
         self.last_ee_to_block_dist = np.linalg.norm(ee_to_block_pos(self.model,self.data))
+        self.ee_rotm = np.eye(3).flatten()
+        print(self.ee_rotm)
 
     def _get_obs(self):
         # Maps environment state to the returned observation
@@ -75,10 +82,15 @@ class ArmEnv(gym.Env):
         ee_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE, ee_name)
         ee_pos = self.data.site_xpos[ee_id].copy()
 
+        ee_rotm = self.data.site_xmat[ee_id].copy().reshape(3,3)
+        ee_rot = rotm_to_euler(ee_rotm)
+
         obs["ee_pos"] = ee_pos
         obs["target_pos"] = block_pos
-        obs["joint_pos"] = get_joints(self.model, self.data)
-        
+        obs["joint_pos"] = get_joints(self.model,self.data)
+        obs["ee_rot"] = ee_rot
+
+        self.ee_rotm = ee_rotm
         return obs
 
     def _get_info(self):
@@ -89,11 +101,16 @@ class ArmEnv(gym.Env):
         reward = 0.0
 
         # reward getting closer to the block
-        dist_norm = np.linalg.norm(ee_to_block_pos(self.model,self.data)) # on the order of 0.4
+        dist = ee_to_block_pos(self.model,self.data) # on the order of 0.4
+        dist_norm = np.linalg.norm(dist)
         
         reward += 20.0 * (self.last_ee_to_block_dist - dist_norm)
         reward += -2.0 * dist_norm
         self.last_ee_to_block_dist = dist_norm
+
+        rot_z = self.ee_rotm[:,2] # get third column
+        cos_sim = np.dot(rot_z,dist) / dist_norm
+        reward += 1.0 * cos_sim
 
         return reward
 
@@ -102,7 +119,7 @@ class ArmEnv(gym.Env):
     
     def _is_terminated(self):
         dist_norm = np.linalg.norm(ee_to_block_pos(self.model,self.data))
-        if dist_norm < 0.4:
+        if dist_norm < 0.1:
             return True
         return False
     
@@ -114,6 +131,7 @@ class ArmEnv(gym.Env):
         self.iter_count = 0
         self.model = mujoco.MjModel.from_xml_path('../kinova_gen3/rl_scene.xml')
         self.data = mujoco.MjData(self.model)
+        mujoco.mj_forward(self.model, self.data)
         self.last_ee_to_block_dist = np.linalg.norm(ee_to_block_pos(self.model,self.data))
         obs = self._get_obs()
         info = self._get_info()
@@ -135,9 +153,9 @@ class ArmEnv(gym.Env):
         gripper_ctrl = action[7]
         gripper_ctrl = np.interp(gripper_ctrl, [-1,1], [0,255])
 
-        curr_joint_vals = get_joints(self.model, self.data)
+        curr_joint_vals = get_joints(self.model,self.data)
         target_joint_vals = curr_joint_vals + joint_ctrl * 0.05
-        set_joints(self.model, self.data, target_joint_vals, 0.0)
+        set_joints(self.model,self.data,target_joint_vals,0.0)
 
         # Step simulation
         mujoco.mj_step(self.model, self.data)
@@ -163,7 +181,7 @@ if __name__ == "__main__":
 
     register(
         id="KinovaEnv",
-        entry_point="gym_env:ArmEnv",
+        entry_point="gym_env_angle:ArmEnv",
         max_episode_steps=200,
     )
 
@@ -179,7 +197,11 @@ if __name__ == "__main__":
         tensorboard_log="../logs/ppo_kinova/"
     )
 
-    model.learn(total_timesteps=1_000_000)
-    model.save("kinova_test")
+    try:
+        model.learn(total_timesteps=500_000)
+    except KeyboardInterrupt:
+        print("Interrupted; saving now...")
+    finally:
+        model.save("kinova_test_angle")
 
 
