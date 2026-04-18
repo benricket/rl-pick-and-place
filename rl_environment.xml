@@ -1,7 +1,8 @@
-<mujoco model="gen3 scene">
-  <include file="gen3.xml"/>
+<mujoco model="gen3_lite_rl">
+  <!-- Robot MJCF + actuators: organized_kinova/6dof/urdf/6dof_mjcf.xml -->
+  <include file="organized_kinova/6dof/urdf/6dof_mjcf.xml"/>
 
-  <statistic center="0.3 0 0.45" extent="0.8" meansize="0.05"/>
+  <statistic center="0.35 0 0.35" extent="1.0" meansize="0.05"/>
 
   <visual>
     <headlight diffuse="0.6 0.6 0.6" ambient="0.1 0.1 0.1" specular="0 0 0"/>
@@ -19,5 +20,14 @@
   <worldbody>
     <light pos="0 0 1.5" directional="true"/>
     <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"/>
+
+    <!-- Target on floor -->
+    <site name="goal_site" type="sphere" size="0.018" pos="0.48 -0.18 0.02" rgba="0.1 0.85 0.2 0.95" group="0"/>
+
+    <!-- Object to pick and place (geom name "cube" for scripts/mujoco_example ee_to_block_pos) -->
+    <body name="cube" pos="0.38 0.1 0.03">
+      <freejoint name="cube_free"/>
+      <geom name="cube" type="box" size="0.025 0.025 0.025" mass="0.08" rgba="0.9 0.2 0.15 1" friction="1 0.005 0.0001"/>
+    </body>
   </worldbody>
 </mujoco>

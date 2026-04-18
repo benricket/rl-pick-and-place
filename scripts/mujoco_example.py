@@ -1,84 +1,138 @@
+"""rl_environment.xml helpers + minimal gripper oscillation viewer."""
+
+import math
 import time
-import os
-import sys
+from pathlib import Path
+
 import numpy as np
 
 import mujoco
 import mujoco.viewer
 
-def get_joints(m,d):
-    """
-    docstring
-    """
-    joint_names = ['joint_1','joint_2','joint_3','joint_4','joint_5','joint_6','joint_7']
-    joint_vals = [d.joint(name).qpos for name in joint_names]
-    return np.array(joint_vals).squeeze()
+# This is the helper function to map gripper to one input
+from gripper_kinova2f import gripper_ctrl_from_ratio
 
-def set_joints(m,d,cmd_joints,gripper=0.0):
-    """
-    docstring
-    """
-    # gripper goes from 0 (open) to 255 (closed)
-    if cmd_joints.size == 7: # we don't have control for the gripper
-        cmd_joints = np.append(cmd_joints,gripper)
-        #print(cmd_joints)
-    d.ctrl = cmd_joints[:]
+# This was bc I had path issues lol
+MODEL = "rl_environment.xml"
+SPEED = 1.2
 
-def ee_to_block_pos(m,d):
-    """
-    Returns the Euclidean distance between the end effector of the robot
-    and the block to pick up
-    """
-    block_name = 'cube'
-    block_id = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, block_name)
-    block_pos = d.geom_xpos[block_id]
+# list of finger joints, names used in the urdf file
+_FINGER = ("RIGHT_BOTTOM", "RIGHT_TIP", "LEFT_BOTTOM", "LEFT_TIP")
 
-    site_name = "pinch_site"
-    sid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_SITE, site_name)
-    ee_pos = d.site_xpos[sid]   # world position (x, y, z)
+
+def get_joints(m, d):
+    """
+    Current positions for arm joints J0 - J5.
     
-    dist = np.linalg.norm(block_pos - ee_pos)
-    return dist
+    Args: 
+        m: mujoco model
+        d: mujoco data
+
+    Returns:
+        np.array: Current positions for arm joints J0 - J5
+    """
+    joint_values = []
+    for i in range(6):
+        name = f"J{i}"
+        val = d.joint(name).qpos[0]
+        joint_values.append(val)
+    return np.array(joint_values, dtype=float)
+
+
+def get_gripper_joints(m, d):
+    """
+    Current positions for finger joints (same order as set_joints actuators 6 - 9).
+
+    Args:
+        m: mujoco model
+        d: mujoco data
+
+    Returns:
+        np.array: Current positions for finger joints
+    """
+    joint_values = []
+    for name in _FINGER:
+        val = d.joint(name).qpos[0]
+        joint_values.append(val)
+    return np.array(joint_values, dtype=float)
+
+
+def set_joints(m, d, cmd_joints, gripper_ratio=None):
+    """
+    Actuator commands: 6 arm positions + 4 finger.
+    
+    Args:
+        m: mujoco model
+        d: mujoco data
+        cmd_joints: commands for arm joints
+        gripper_ratio: gripper ratio
+
+    Returns:
+        None
+    """
+    # convert the command joints into a numpy array
+    cmd_joints = np.asarray(cmd_joints, dtype=float)
+    control_vector = np.zeros(10)
+    control_vector[:6] = cmd_joints[:6]
+
+    # gripper control logic
+    if gripper_ratio is not None:
+        gripper_ctrl = gripper_ctrl_from_ratio(gripper_ratio)
+    else:
+        gripper_ctrl = get_gripper_joints(m, d)
+
+    control_vector[6:10] = gripper_ctrl
+    d.ctrl[:] = control_vector
+
+def ee_to_block_pos(m, d):
+    """
+    Calculates the Euclidean distance between the 'pinch_site' (EE) 
+    and the 'cube' (target).
+    
+    Args:
+        m: mujoco model
+        d: mujoco data
+
+    Returns:
+        float: Euclidean distance between the 'pinch_site' and the 'cube'
+    """
+    # Get IDs for the target geometry and the end-effector site
+    block_id = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, "cube")
+    site_id = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_SITE, "pinch_site")
+
+    # Cartesian positions (x, y, z)
+    block_pos = d.geom_xpos[block_id]
+    ee_pos = d.site_xpos[site_id]
+
+    # L2 Norm: sqrt((x2-x1)^2 + (y2-y1)^2 + (z2-z1)^2)
+    distance = np.linalg.norm(block_pos - ee_pos)
+    return float(distance)
 
 if __name__ == "__main__":
-    m = mujoco.MjModel.from_xml_path('../kinova_gen3/rl_scene.xml')
-    d = mujoco.MjData(m)
-    iter_count = 0
+    model = mujoco.MjModel.from_xml_path(str(MODEL))
+    data = mujoco.MjData(model)
 
-    with mujoco.viewer.launch_passive(m, d) as viewer:
-        # Close the viewer automatically after 30 wall-seconds.
-        start = time.time()
+    with mujoco.viewer.launch_passive(model, data) as viewer:
         while viewer.is_running():
             step_start = time.time()
 
-            # mj_step can be replaced with code that also evaluates
-            # a policy and applies a control signal before stepping the physics.
-            mujoco.mj_step(m, d)
+            # Oscillate gripper to match sim behavior
+            oscillation = math.sin(time.time() * SPEED)
+            ratio = (oscillation + 1.0) * 0.5
 
-            if iter_count == 0:
-                geom_name = 'cube'
-                geom_id = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, geom_name)
-                position = d.geom_xpos[geom_id]
-                #print(f"{geom_name} position: {position}")
+            gripper_signals = gripper_ctrl_from_ratio(ratio)
+            data.ctrl[6:10] = gripper_signals
 
-            if iter_count % 50 == 0:
-                joints = get_joints(m,d)
-                joints += 0.005
-                set_joints(m,d,joints,1.0)
-                #print(f"control: {d.ctrl}")
-                ee_to_block_pos(m,d)
+            mujoco.mj_step(model, data)
 
-
-            # Example modification of a viewer option: toggle contact points every two seconds.
+             # Example modification of a viewer option: toggle contact points every two seconds.
             with viewer.lock():
-                viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = int(d.time % 2)
+                viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = int(data.time % 2)
 
             # Pick up changes to the physics state, apply perturbations, update options from GUI.
             viewer.sync()
 
             # Rudimentary time keeping, will drift relative to wall clock.
-            time_until_next_step = m.opt.timestep - (time.time() - step_start)
+            time_until_next_step = model.opt.timestep - (time.time() - step_start)
             if time_until_next_step > 0:
                 time.sleep(time_until_next_step)
-            
-            iter_count = (iter_count + 1) % 500

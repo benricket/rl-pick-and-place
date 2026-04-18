@@ -1,4 +1,7 @@
 <robot name="KR7108-URDF" version="1.0">
+  <mujoco>
+    <compiler strippath="false"/>
+  </mujoco>
   <link name="BASE">
     <inertial>
       <origin xyz="0.00244324 0.00015573 0.08616742" rpy="0 0 0" />
@@ -8,13 +11,13 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="package://kortex_description/gen3_lite/meshes/BASE.STL" />
+        <mesh filename="../meshes/base_link.STL" />
       </geometry>
     </visual>
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="package://kortex_description/gen3_lite/meshes/BASE.STL" />
+        <mesh filename="../meshes/base_link.STL" />
       </geometry>
     </collision>
   </link>
@@ -27,13 +30,13 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="package://kortex_description/gen3_lite/meshes/SHOULDER.STL" />
+        <mesh filename="../meshes/shoulder_link.STL" />
       </geometry>
     </visual>
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="package://kortex_description/gen3_lite/meshes/SHOULDER.STL" />
+        <mesh filename="../meshes/shoulder_link.STL" />
       </geometry>
     </collision>
   </link>
@@ -42,10 +45,7 @@
     <parent link="BASE" />
     <child link="SHOULDER" />
     <axis xyz="0 0 1" />
-    <limit lower="-2.76" upper="2.76" effort="10" velocity="0.35" />
-    <calibration rising="0" falling="0" />
-    <dynamics damping="0" friction="0" />
-    <safety_controller soft_upper="0" soft_lower="0" k_position="0" k_velocity="0" />
+    <limit lower="-2.69" upper="2.69" effort="10" velocity="1.6" />
   </joint>
   <link name="ARM">
     <inertial>
@@ -56,13 +56,13 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="package://kortex_description/gen3_lite/meshes/ARM.STL" />
+        <mesh filename="../meshes/arm_link.STL" />
       </geometry>
     </visual>
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="package://kortex_description/gen3_lite/meshes/ARM.STL" />
+        <mesh filename="../meshes/arm_link.STL" />
       </geometry>
     </collision>
   </link>
@@ -71,10 +71,7 @@
     <parent link="SHOULDER" />
     <child link="ARM" />
     <axis xyz="0 0 1" />
-    <limit lower="-2.76" upper="2.76" effort="14" velocity="0.35" />
-    <calibration rising="0" falling="0" />
-    <dynamics damping="0" friction="0" />
-    <safety_controller soft_upper="0" soft_lower="0" k_position="0" k_velocity="0" />
+    <limit lower="-2.69" upper="2.69" effort="14" velocity="1.6" />
   </joint>
   <link name="FOREARM">
     <inertial>
@@ -85,13 +82,13 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="package://kortex_description/gen3_lite/meshes/FOREARM.STL" />
+        <mesh filename="../meshes/forearm_link.STL" />
       </geometry>
     </visual>
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="package://kortex_description/gen3_lite/meshes/FOREARM.STL" />
+        <mesh filename="../meshes/forearm_link.STL" />
       </geometry>
     </collision>
   </link>
@@ -100,10 +97,7 @@
     <parent link="ARM" />
     <child link="FOREARM" />
     <axis xyz="0 0 1" />
-    <limit lower="-2.76" upper="2.76" effort="10" velocity="0.35" />
-    <calibration rising="0" falling="0" />
-    <dynamics damping="0" friction="0" />
-    <safety_controller soft_upper="0" soft_lower="0" k_position="0" k_velocity="0" />
+    <limit lower="-2.69" upper="2.69" effort="10" velocity="1.6" />
   </joint>
   <link name="LOWER_WRIST">
     <inertial>
@@ -114,13 +108,13 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="package://kortex_description/gen3_lite/meshes/LOWER_WRIST.STL" />
+        <mesh filename="../meshes/lower_wrist_link.STL" />
       </geometry>
     </visual>
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="package://kortex_description/gen3_lite/meshes/LOWER_WRIST.STL" />
+        <mesh filename="../meshes/lower_wrist_link.STL" />
       </geometry>
     </collision>
   </link>
@@ -129,10 +123,7 @@
     <parent link="FOREARM" />
     <child link="LOWER_WRIST" />
     <axis xyz="0 0 1" />
-    <limit lower="-2.67" upper="2.67" effort="7" velocity="0.35" />
-    <calibration rising="0" falling="0" />
-    <dynamics damping="0" friction="0" />
-    <safety_controller soft_upper="0" soft_lower="0" k_position="0" k_velocity="0" />
+    <limit lower="-2.59" upper="2.59" effort="7" velocity="1.6" />
   </joint>
   <link name="UPPER_WRIST">
     <inertial>
@@ -143,13 +134,13 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="package://kortex_description/gen3_lite/meshes/UPPER_WRIST.STL" />
+        <mesh filename="../meshes/upper_wrist_link.STL" />
       </geometry>
     </visual>
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <mesh filename="package://kortex_description/gen3_lite/meshes/UPPER_WRIST.STL" />
+        <mesh filename="../meshes/upper_wrist_link.STL" />
       </geometry>
     </collision>
   </link>
@@ -158,31 +149,44 @@
     <parent link="LOWER_WRIST" />
     <child link="UPPER_WRIST" />
     <axis xyz="0 0 1" />
-    <limit lower="-2.67" upper="2.67" effort="7" velocity="0.35" />
-    <calibration rising="0" falling="0" />
-    <dynamics damping="0" friction="0" />
-    <safety_controller soft_upper="0" soft_lower="0" k_position="0" k_velocity="0" />
+    <limit lower="-2.57" upper="2.57" effort="7" velocity="1.6" />
   </joint>
-  <link name="END_EFFECTOR"/>
+  <link name="END_EFFECTOR">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <mass value="1e-06" />
+      <inertia ixx="1e-09" ixy="0" ixz="0" iyy="1e-09" iyz="0" izz="1e-09" />
+    </inertial>
+  </link>
   <joint name="J5" type="revolute">
     <origin xyz="-0.105 0 0.0285" rpy="0 -1.5708 0" />
     <parent link="UPPER_WRIST" />
     <child link="END_EFFECTOR" />
     <axis xyz="0 0 1" />
-    <limit lower="-2.67" upper="2.67" effort="7" velocity="0.35" />
-    <calibration rising="0" falling="0" />
-    <dynamics damping="0" friction="0" />
-    <safety_controller soft_upper="0" soft_lower="0" k_position="0" k_velocity="0" />
+    <limit lower="-2.59" upper="2.59" effort="7" velocity="3.2" />
   </joint>
-  <link name="DUMMY" />
-  <joint name="END_EFFECTOR" type="fixed">
-    <origin xyz="0 0 0.13" rpy="0 0 0" />
+  <link name="DUMMY">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <mass value="1e-06" />
+      <inertia ixx="1e-09" ixy="0" ixz="0" iyy="1e-09" iyz="0" izz="1e-09" />
+    </inertial>
+  </link>
+  <joint name="end_effector_to_dummy" type="fixed">
+    <origin xyz="0 0 0" rpy="0 0 0" />
     <parent link="END_EFFECTOR" />
     <child link="DUMMY" />
-    <axis xyz="0 0 1" />
-    <limit lower="0" upper="0" effort="0" velocity="0" />
-    <calibration rising="0" falling="0" />
-    <dynamics damping="0" friction="0" />
-    <safety_controller soft_upper="0" soft_lower="0" k_position="0" k_velocity="0" />
+  </joint>
+  <link name="TOOL_FRAME">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <mass value="1e-06" />
+      <inertia ixx="1e-09" ixy="0" ixz="0" iyy="1e-09" iyz="0" izz="1e-09" />
+    </inertial>
+  </link>
+  <joint name="tool_frame_joint" type="fixed">
+    <origin xyz="0 0 0.130" rpy="0 0 1.57079632679" />
+    <parent link="END_EFFECTOR" />
+    <child link="TOOL_FRAME" />
   </joint>
 </robot>

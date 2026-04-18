@@ -57,7 +57,7 @@ class ArmEnv(gym.Env):
 
         obs["ee_pos"] = ee_pos
         obs["target_pos"] = block_pos
-        obs["joint_pos"] = get_joints(self.model,self.data)
+        obs["joint_pos"] = get_joints(self.model, self.data)
         
         return obs
 
@@ -112,9 +112,9 @@ class ArmEnv(gym.Env):
         gripper_ctrl = action[7]
         gripper_ctrl = np.interp(gripper_ctrl, [-1,1], [0,255])
 
-        curr_joint_vals = get_joints(self.model,self.data)
+        curr_joint_vals = get_joints(self.model, self.data)
         target_joint_vals = curr_joint_vals + joint_ctrl * 0.05
-        set_joints(self.model,self.data,target_joint_vals,0.0)
+        set_joints(self.model, self.data, target_joint_vals, 0.0)
 
         # Step simulation
         mujoco.mj_step(self.model, self.data)
