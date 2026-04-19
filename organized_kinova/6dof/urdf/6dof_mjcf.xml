@@ -54,7 +54,7 @@
                 <joint name="J5" pos="0 0 0" axis="0 0 1" range="-2.59 2.59" actuatorfrcrange="-7 7"/>
                 <geom type="mesh" mesh="gripper_base_link"/>
                 <!-- EE reference for RL / scripts/mujoco_example.ee_to_block_pos; tune pos with task frame -->
-                <site name="pinch_site" pos="0 0 -0.09" size="0.006" rgba="1 1 1 0"/>
+                <site name="pinch_site" pos="0 0 0.095" size="0.006" rgba="1 0 0 1"/>
                 <body name="RIGHT_FINGER_PROX" pos="0 -0.030501 0.070003" quat="0.707105 0 0.707108 0">
                   <inertial pos="0.020257 0.0063483 6.991e-05" quat="0.598941 0.598941 0.375858 0.375858" mass="0.018385" diaginertia="5.25068e-06 4.77e-06 1.59932e-06"/>
                   <joint name="RIGHT_BOTTOM" pos="0 0 0" axis="0 0 1" range="-0.09 0.96" actuatorfrcrange="-1000 1000"/>
