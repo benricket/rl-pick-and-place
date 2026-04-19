@@ -1,4 +1,5 @@
 import numpy as np
+from pathlib import Path
 from typing import Optional, Callable
 
 import gymnasium as gym
@@ -9,6 +10,9 @@ from mujoco_example import ee_to_block_pos, set_joints, get_joints
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_checker import check_env
 from scipy.spatial.transform import Rotation
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+XML_PATH = (SCRIPT_DIR.parent / "rl_environment.xml").resolve()
 
 def rotm_to_euler(rotm):
     rot = Rotation.from_matrix(rotm)
@@ -49,7 +53,7 @@ class ArmEnv(gym.Env):
                 #"target_rot": gym.spaces.Box(0, 2*np.pi, shape=(3,), dtype=float),  # roll,pitch,yaw
                 #"goal_pos": gym.spaces.Box(-1, 1, shape=(3,), dtype=float),  # x,y,z
                 #"goal_rot": gym.spaces.Box(0, 2*np.pi, shape=(3,), dtype=float),  # roll,pitch,yaw
-                "joint_pos": gym.spaces.Box(-np.pi, np.pi, shape=(7,), dtype=float)
+                "joint_pos": gym.spaces.Box(-np.pi, np.pi, shape=(6,), dtype=float)
             }
         )
 
@@ -57,11 +61,11 @@ class ArmEnv(gym.Env):
         self.action_space = gym.spaces.Box(
             low=-1.0,
             high=1.0,
-            shape=(8,),   # 7 joints + 1 gripper
+            shape=(7,),   # 7 joints + 1 gripper
             dtype=np.float32,
         )
 
-        self.model = mujoco.MjModel.from_xml_path('../kinova_gen3/rl_scene.xml')
+        self.model = mujoco.MjModel.from_xml_path(str(XML_PATH))
         self.data = mujoco.MjData(self.model)
         mujoco.mj_forward(self.model, self.data)
         self.iter_count = 0
@@ -112,6 +116,8 @@ class ArmEnv(gym.Env):
         cos_sim = np.dot(rot_z,dist) / dist_norm
         reward += 1.0 * cos_sim
 
+        #reward = 1.0 * cos_sim
+
         return reward
 
     def _is_truncated(self):
@@ -129,7 +135,7 @@ class ArmEnv(gym.Env):
         """
         super().reset(seed=seed)
         self.iter_count = 0
-        self.model = mujoco.MjModel.from_xml_path('../kinova_gen3/rl_scene.xml')
+        self.model = mujoco.MjModel.from_xml_path(str(XML_PATH))
         self.data = mujoco.MjData(self.model)
         mujoco.mj_forward(self.model, self.data)
         self.last_ee_to_block_dist = np.linalg.norm(ee_to_block_pos(self.model,self.data))
@@ -147,18 +153,21 @@ class ArmEnv(gym.Env):
         truncated = False
         info = {}
 
+        max_joint_change = 0.2 # rad
+
         # Apply action
-        joint_ctrl = action[0:7]
-        joint_ctrl *= np.pi # map -1,1 to -pi,pi
-        gripper_ctrl = action[7]
+        joint_ctrl = action[0:6]
+        joint_ctrl *= max_joint_change # map -1,1 to -pi,pi
+        gripper_ctrl = action[6]
         gripper_ctrl = np.interp(gripper_ctrl, [-1,1], [0,255])
 
         curr_joint_vals = get_joints(self.model,self.data)
-        target_joint_vals = curr_joint_vals + joint_ctrl * 0.05
+        target_joint_vals = curr_joint_vals + joint_ctrl
         set_joints(self.model,self.data,target_joint_vals,0.0)
 
         # Step simulation
-        mujoco.mj_step(self.model, self.data)
+        for _ in range(5):
+            mujoco.mj_step(self.model, self.data)
 
         # Get observation
         obs = self._get_obs()
@@ -170,7 +179,7 @@ class ArmEnv(gym.Env):
         truncated = self._is_truncated()
         terminated = self._is_terminated()
         if terminated:
-            reward += 2000.0 * (200 - self.iter_count) / 200
+            reward += 2000.0 * (400 - self.iter_count) / 400
 
         self.iter_count += 1
 
@@ -182,7 +191,7 @@ if __name__ == "__main__":
     register(
         id="KinovaEnv",
         entry_point="gym_env_angle:ArmEnv",
-        max_episode_steps=200,
+        max_episode_steps=400,
     )
 
     env = gym.make("KinovaEnv")
@@ -192,7 +201,7 @@ if __name__ == "__main__":
         "MultiInputPolicy",
         env,
         verbose=1,
-        learning_rate=linear_schedule(0.01,0.0003),
+        learning_rate=linear_schedule(0.005,0.003),
         #learning_rate=0.001,
         tensorboard_log="../logs/ppo_kinova/"
     )

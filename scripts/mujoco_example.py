@@ -1,6 +1,7 @@
 """rl_environment.xml helpers + minimal gripper oscillation viewer."""
 
 import math
+from pathlib import Path
 import time
 from pathlib import Path
 
@@ -12,8 +13,9 @@ import mujoco.viewer
 # This is the helper function to map gripper to one input
 from gripper_kinova2f import gripper_ctrl_from_ratio
 
-# This was bc I had path issues lol
-MODEL = "rl_environment.xml"
+SCRIPT_DIR = Path(__file__).resolve().parent
+XML_PATH = (SCRIPT_DIR.parent / "rl_environment.xml").resolve()
+
 SPEED = 1.2
 
 # list of finger joints, names used in the urdf file
@@ -111,7 +113,7 @@ def ee_to_block_pos(m, d):
     return dist
 
 if __name__ == "__main__":
-    model = mujoco.MjModel.from_xml_path(str(MODEL))
+    model = mujoco.MjModel.from_xml_path(str(XML_PATH))
     data = mujoco.MjData(model)
 
     with mujoco.viewer.launch_passive(model, data) as viewer:
