@@ -21,7 +21,7 @@ if __name__ == "__main__":
 
     with mujoco.viewer.launch_passive(env.model, env.data) as viewer:
         while viewer.is_running():
-            action, _states = model.predict(obs, deterministic=True)
+            action, _states = model.predict(obs, deterministic=False)
             obs, reward, terminated, truncated, info = env.step(action)
 
             # Sync viewer with latest sim state

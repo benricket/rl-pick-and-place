@@ -40,7 +40,6 @@ def get_joints(m, d):
         joint_values.append(val)
     return np.array(joint_values, dtype=float)
 
-
 def get_gripper_joints(m, d):
     """
     Current positions for finger joints (same order as set_joints actuators 6 - 9).
@@ -58,6 +57,18 @@ def get_gripper_joints(m, d):
         joint_values.append(val)
     return np.array(joint_values, dtype=float)
 
+def get_gripper_open_close(m, d):
+    """
+    We abstract the gripper as a single DOF instead of 4
+
+    Returns: 
+        Float between 0 if the gripper is closed and 1 if the gripper is open
+    """
+    gripper_joints = get_gripper_joints(m,d)
+    rb = gripper_joints[0] # 0.96 at open
+    lb = gripper_joints[2] # -0.96 at open
+    value = (rb - lb)/(2 * 0.96)
+    return value
 
 def set_joints(m, d, cmd_joints, gripper_ratio=None):
     """

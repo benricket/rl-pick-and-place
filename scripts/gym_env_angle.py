@@ -6,13 +6,16 @@ import gymnasium as gym
 from gymnasium.envs.registration import register
 import mujoco
 import mujoco.viewer
-from mujoco_example import ee_to_block_pos, set_joints, get_joints
+from mujoco_example import ee_to_block_pos, set_joints, get_joints, get_gripper_open_close
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_checker import check_env
 from scipy.spatial.transform import Rotation
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 XML_PATH = (SCRIPT_DIR.parent / "rl_environment.xml").resolve()
+
+FIND_OBJECT = 0
+FIND_GOAL = 1
 
 def rotm_to_euler(rotm):
     rot = Rotation.from_matrix(rotm)
@@ -50,10 +53,9 @@ class ArmEnv(gym.Env):
                 "ee_pos": gym.spaces.Box(-5, 5, shape=(3,), dtype=float),  # x,y,z
                 "ee_rot": gym.spaces.Box(-np.pi, np.pi, shape=(3,), dtype=float),  # rot_z,rot_x,rot_y
                 "target_pos": gym.spaces.Box(-5, 5, shape=(3,), dtype=float),  # x,y,z
-                #"target_rot": gym.spaces.Box(0, 2*np.pi, shape=(3,), dtype=float),  # roll,pitch,yaw
-                #"goal_pos": gym.spaces.Box(-1, 1, shape=(3,), dtype=float),  # x,y,z
-                #"goal_rot": gym.spaces.Box(0, 2*np.pi, shape=(3,), dtype=float),  # roll,pitch,yaw
-                "joint_pos": gym.spaces.Box(-np.pi, np.pi, shape=(6,), dtype=float)
+                "joint_pos": gym.spaces.Box(-np.pi, np.pi, shape=(6,), dtype=float),
+                "gripper_pos": gym.spaces.Box(0,1, shape=(1,), dtype=float),
+                "at_box": gym.spaces.Discrete(2),
             }
         )
 
@@ -69,10 +71,12 @@ class ArmEnv(gym.Env):
         self.data = mujoco.MjData(self.model)
         mujoco.mj_forward(self.model, self.data)
         self.iter_count = 0
+        self.state = FIND_OBJECT
 
         # attributes for reward func calculations
         self.last_ee_to_block_dist = np.linalg.norm(ee_to_block_pos(self.model,self.data))
         self.ee_rotm = np.eye(3).flatten()
+        self.gripper = 0.0
         print(self.ee_rotm)
 
     def _get_obs(self):
@@ -89,12 +93,18 @@ class ArmEnv(gym.Env):
         ee_rotm = self.data.site_xmat[ee_id].copy().reshape(3,3)
         ee_rot = rotm_to_euler(ee_rotm)
 
+        gripper = get_gripper_open_close(self.model, self.data)
+
         obs["ee_pos"] = ee_pos
         obs["target_pos"] = block_pos
         obs["joint_pos"] = get_joints(self.model,self.data)
         obs["ee_rot"] = ee_rot
+        obs["gripper_pos"] = np.array([gripper])
+        obs["at_box"] = int(self.last_ee_to_block_dist < 0.03)
 
         self.ee_rotm = ee_rotm
+        self.gripper = gripper
+
         return obs
 
     def _get_info(self):
@@ -109,12 +119,24 @@ class ArmEnv(gym.Env):
         dist_norm = np.linalg.norm(dist)
         
         reward += 20.0 * (self.last_ee_to_block_dist - dist_norm)
-        reward += -2.0 * dist_norm
+        reward += -10.0 * dist_norm
         self.last_ee_to_block_dist = dist_norm
 
         rot_z = self.ee_rotm[:,2] # get third column
         cos_sim = np.dot(rot_z,dist) / dist_norm
         reward += 1.0 * cos_sim
+
+        if dist_norm < 0.3:
+            reward += 0.1
+            if dist_norm < 0.1:
+                reward += 3
+                if dist_norm < 0.03:
+                    reward += 30
+
+        if self.state == FIND_GOAL:
+            reward += 30 * self.gripper
+        elif self.state == FIND_OBJECT:
+            reward -= 1.0 * self.gripper
 
         #reward = 1.0 * cos_sim
 
@@ -124,8 +146,10 @@ class ArmEnv(gym.Env):
         return False
     
     def _is_terminated(self):
+        if self.state == FIND_OBJECT or self.gripper < 0.5:
+            return False
         dist_norm = np.linalg.norm(ee_to_block_pos(self.model,self.data))
-        if dist_norm < 0.1:
+        if dist_norm < 0.03:
             return True
         return False
     
@@ -139,6 +163,8 @@ class ArmEnv(gym.Env):
         self.data = mujoco.MjData(self.model)
         mujoco.mj_forward(self.model, self.data)
         self.last_ee_to_block_dist = np.linalg.norm(ee_to_block_pos(self.model,self.data))
+        self.gripper = 0.0
+        self.state = FIND_OBJECT
         obs = self._get_obs()
         info = self._get_info()
         return obs,info
@@ -159,11 +185,11 @@ class ArmEnv(gym.Env):
         joint_ctrl = action[0:6]
         joint_ctrl *= max_joint_change # map -1,1 to -pi,pi
         gripper_ctrl = action[6]
-        gripper_ctrl = np.interp(gripper_ctrl, [-1,1], [0,255])
+        gripper_ctrl = np.interp(gripper_ctrl, [-1,1], [0,1])
 
         curr_joint_vals = get_joints(self.model,self.data)
         target_joint_vals = curr_joint_vals + joint_ctrl
-        set_joints(self.model,self.data,target_joint_vals,0.0)
+        set_joints(self.model,self.data,target_joint_vals,gripper_ctrl)
 
         # Step simulation
         for _ in range(5):
@@ -175,11 +201,15 @@ class ArmEnv(gym.Env):
         # Get reward
         reward = self._compute_reward()
 
+        if self.state == FIND_OBJECT and self.last_ee_to_block_dist < 0.01:
+            reward += 2000.0 * (1000 - self.iter_count) / 1000
+            self.state = FIND_GOAL
+
         # Check termination
         truncated = self._is_truncated()
         terminated = self._is_terminated()
         if terminated:
-            reward += 2000.0 * (400 - self.iter_count) / 400
+            reward += 5000.0 * (1000 - self.iter_count) / 1000
 
         self.iter_count += 1
 
@@ -191,7 +221,7 @@ if __name__ == "__main__":
     register(
         id="KinovaEnv",
         entry_point="gym_env_angle:ArmEnv",
-        max_episode_steps=400,
+        max_episode_steps=1000,
     )
 
     env = gym.make("KinovaEnv")
@@ -203,7 +233,7 @@ if __name__ == "__main__":
         verbose=1,
         learning_rate=linear_schedule(0.005,0.003),
         #learning_rate=0.001,
-        tensorboard_log="../logs/ppo_kinova/"
+        tensorboard_log="../logs/ppo_kinova/",
     )
 
     try:
