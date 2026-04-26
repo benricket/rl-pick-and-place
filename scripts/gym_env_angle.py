@@ -6,9 +6,10 @@ import gymnasium as gym
 from gymnasium.envs.registration import register
 import mujoco
 import mujoco.viewer
-from mujoco_example import ee_to_block_pos, set_joints, get_joints, get_gripper_open_close
-from stable_baselines3 import PPO
+from mujoco_example import ee_to_block_pos, set_joints, get_joints, get_gripper_open_close, get_joint_velocities
+from stable_baselines3 import PPO, SAC
 from stable_baselines3.common.env_checker import check_env
+from stable_baselines3.common.callbacks import BaseCallback
 from scipy.spatial.transform import Rotation
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -48,16 +49,39 @@ class ArmEnv(gym.Env):
         # Initialize environment
 
         # Holds pose of end effector, target (block to pick up) and goal (block to set the target on)
-        self.observation_space = gym.spaces.Dict(
-            {
-                "ee_pos": gym.spaces.Box(-5, 5, shape=(3,), dtype=float),  # x,y,z
-                "ee_rot": gym.spaces.Box(-np.pi, np.pi, shape=(3,), dtype=float),  # rot_z,rot_x,rot_y
-                "target_pos": gym.spaces.Box(-5, 5, shape=(3,), dtype=float),  # x,y,z
-                "joint_pos": gym.spaces.Box(-np.pi, np.pi, shape=(6,), dtype=float),
-                "gripper_pos": gym.spaces.Box(0,1, shape=(1,), dtype=float),
-                "at_box": gym.spaces.Discrete(2),
-            }
-        )
+        # self.observation_space = gym.spaces.Dict(
+        #     {
+        #         "ee_pos": gym.spaces.Box(-5, 5, shape=(3,), dtype=float),  # x,y,z
+        #         "ee_rot": gym.spaces.Box(-np.pi, np.pi, shape=(3,), dtype=float),  # rot_z,rot_x,rot_y
+        #         "target_pos": gym.spaces.Box(-5, 5, shape=(3,), dtype=float),  # x,y,z
+        #         "joint_pos": gym.spaces.Box(-np.pi, np.pi, shape=(6,), dtype=float),
+        #         "joint_vel": gym.spaces.Box(-np.inf,np.inf, shape=(6,), dtype=float),
+        #         "gripper_pos": gym.spaces.Box(0,1, shape=(1,), dtype=float),
+        #         "at_box": gym.spaces.Discrete(2),
+        #     }
+        # )
+
+        low = np.concatenate([
+            np.full(3, -5,dtype=np.float32),          # ee_pos
+            np.full(3, -np.pi,dtype=np.float32),      # ee_rot
+            np.full(3, -5, dtype=np.float32),          # target_pos
+            np.full(6, -np.pi, dtype=np.float32),      # joint_pos
+            np.full(6, -10, dtype=np.float32),          # joint_vel (clipped to 10)
+            np.array([0.0], dtype=np.float32),         # gripper_pos
+            np.array([0.0], dtype=np.float32),         # at_box
+        ])
+
+        high = np.concatenate([
+            np.full(3, 5, dtype=np.float32),
+            np.full(3, np.pi, dtype=np.float32),
+            np.full(3, 5, dtype=np.float32),
+            np.full(6, np.pi, dtype=np.float32),
+            np.full(6, 10, dtype=np.float32),          # joint_vel
+            np.array([1.0], dtype=np.float32),
+            np.array([1.0], dtype=np.float32),
+        ])
+
+        self.observation_space = gym.spaces.Box(low, high, dtype=np.float32)
 
         # We output a desired pose, which the handling of the action will approximate given dt
         self.action_space = gym.spaces.Box(
@@ -77,6 +101,7 @@ class ArmEnv(gym.Env):
         self.last_ee_to_block_dist = np.linalg.norm(ee_to_block_pos(self.model,self.data))
         self.ee_rotm = np.eye(3).flatten()
         self.gripper = 0.0
+        self.joint_ctrl = np.zeros(shape=(6,))
         print(self.ee_rotm)
 
     def _get_obs(self):
@@ -95,17 +120,18 @@ class ArmEnv(gym.Env):
 
         gripper = get_gripper_open_close(self.model, self.data)
 
-        obs["ee_pos"] = ee_pos
-        obs["target_pos"] = block_pos
-        obs["joint_pos"] = get_joints(self.model,self.data)
-        obs["ee_rot"] = ee_rot
-        obs["gripper_pos"] = np.array([gripper])
-        obs["at_box"] = int(self.last_ee_to_block_dist < 0.03)
-
         self.ee_rotm = ee_rotm
         self.gripper = gripper
 
-        return obs
+        return np.concatenate([
+            ee_pos,
+            block_pos,
+            get_joints(self.model,self.data),
+            get_joint_velocities(self.model,self.data),
+            ee_rot,
+            np.array([gripper]),
+            np.array([int(self.last_ee_to_block_dist < 0.03)])
+        ]).astype(np.float32)
 
     def _get_info(self):
         # gets auxiliary info for debugging
@@ -113,44 +139,63 @@ class ArmEnv(gym.Env):
 
     def _compute_reward(self):
         reward = 0.0
+        info = {}
 
         # reward getting closer to the block
         dist = ee_to_block_pos(self.model,self.data) # on the order of 0.4
         dist_norm = np.linalg.norm(dist)
         
-        reward += 20.0 * (self.last_ee_to_block_dist - dist_norm)
-        reward += -10.0 * dist_norm
-        self.last_ee_to_block_dist = dist_norm
+        #reward += 30.0 * (self.last_ee_to_block_dist - dist_norm)
+        dist_reward = -3.0 * dist_norm
+        reward += dist_reward
+        info["rew_dist"] = dist_reward
 
+        vel_reward = -1.0 * np.linalg.norm(self.joint_ctrl)**2
+        reward += vel_reward
+        info["rew_vel_sq"] = vel_reward 
+
+        self.last_ee_to_block_dist = dist_norm
         rot_z = self.ee_rotm[:,2] # get third column
         cos_sim = np.dot(rot_z,dist) / dist_norm
-        reward += 1.0 * cos_sim
+        align_reward = 0.05 * cos_sim
+        reward += align_reward
+        info["rew_align"] = align_reward
 
-        if dist_norm < 0.3:
-            reward += 0.1
-            if dist_norm < 0.1:
-                reward += 3
-                if dist_norm < 0.03:
-                    reward += 30
+        # if dist_norm < 0.3:
+        #     reward += 0.01
+        #     if dist_norm < 0.1:
+        #         reward += 0.3
+        #         if dist_norm < 0.03:
+        #             reward += 3
 
-        if self.state == FIND_GOAL:
-            reward += 30 * self.gripper
-        elif self.state == FIND_OBJECT:
-            reward -= 1.0 * self.gripper
+        # if self.state == FIND_GOAL:
+        #     reward += 30 * self.gripper
+        gripper_reward = 0.0
+        if self.state == FIND_OBJECT:
+            gripper_reward = -0.1 * self.gripper
+        reward += gripper_reward
+        info["rew_gripper"] = gripper_reward
 
-        #reward = 1.0 * cos_sim
+        # if dist_norm < 0.10:
+        #     reward += 1.0
+        # if dist_norm < 0.05:
+        #     reward += 3.0
+        # if dist_norm < 0.02:
+        #     reward += 10.0
+        # if dist_norm < 0.01:
+        #     reward += 30.0
 
-        return reward
+        return reward,info
 
     def _is_truncated(self):
         return False
     
     def _is_terminated(self):
+        dist_norm = self.last_ee_to_block_dist
+        if dist_norm < 0.05:
+            return True
         if self.state == FIND_OBJECT or self.gripper < 0.5:
             return False
-        dist_norm = np.linalg.norm(ee_to_block_pos(self.model,self.data))
-        if dist_norm < 0.03:
-            return True
         return False
     
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
@@ -165,6 +210,7 @@ class ArmEnv(gym.Env):
         self.last_ee_to_block_dist = np.linalg.norm(ee_to_block_pos(self.model,self.data))
         self.gripper = 0.0
         self.state = FIND_OBJECT
+        self.joint_ctrl = np.zeros(shape=(6,))
         obs = self._get_obs()
         info = self._get_info()
         return obs,info
@@ -177,7 +223,6 @@ class ArmEnv(gym.Env):
         obs = 0
         terminated = False
         truncated = False
-        info = {}
 
         max_joint_change = 0.2 # rad
 
@@ -189,6 +234,7 @@ class ArmEnv(gym.Env):
 
         curr_joint_vals = get_joints(self.model,self.data)
         target_joint_vals = curr_joint_vals + joint_ctrl
+        self.joint_ctrl = joint_ctrl
         set_joints(self.model,self.data,target_joint_vals,gripper_ctrl)
 
         # Step simulation
@@ -199,48 +245,93 @@ class ArmEnv(gym.Env):
         obs = self._get_obs()
 
         # Get reward
-        reward = self._compute_reward()
+        reward,info = self._compute_reward()
 
+        term_reward = 0.0
         if self.state == FIND_OBJECT and self.last_ee_to_block_dist < 0.01:
-            reward += 2000.0 * (1000 - self.iter_count) / 1000
-            self.state = FIND_GOAL
+            term_reward = 100.0 * (800 - self.iter_count) / 800
+        reward += term_reward
+        info["rew_at_target"] = term_reward
+        #     self.state = FIND_GOAL
 
         # Check termination
         truncated = self._is_truncated()
         terminated = self._is_terminated()
-        if terminated:
-            reward += 5000.0 * (1000 - self.iter_count) / 1000
+        #if terminated:
+        #    reward += 5000.0 * (800 - self.iter_count) / 800
 
         self.iter_count += 1
 
         return obs, reward, terminated, truncated, info
 
+class RewardPrintCallback(BaseCallback):
+    def __init__(self, keys=None, print_every=200, verbose=0):
+        super().__init__(verbose)
+        self.keys = keys
+        self.buffer = {}
+        self.last_print_step = 0
+        self.print_every = print_every
+
+    def _on_step(self) -> bool:
+        infos = self.locals.get("infos", [])
+
+        for info in infos:
+            for k in self.keys:
+                if k in info:
+                    self.buffer.setdefault(k, []).append(info[k])
+
+        return True
+
+    def _on_rollout_end(self) -> None:
+        if self.num_timesteps - self.last_print_step < self.print_every:
+            return
+        print("\n[Reward terms over rollout]")
+        means = {}
+        for k, vals in self.buffer.items():
+            means[k] = np.mean(vals)
+        abs_rew_mean = np.sum([np.abs(val) for val in means.values()])
+        for k, m in means.items():
+            print(f"{k}: mean={m: .4f}, proportion={np.abs(m)/abs_rew_mean: .4f}")
+        print("-" * 30)
+
+        self.buffer.clear()
+        self.last_print_step = self.num_timesteps
 
 if __name__ == "__main__":
 
     register(
         id="KinovaEnv",
         entry_point="gym_env_angle:ArmEnv",
-        max_episode_steps=1000,
+        max_episode_steps=800,
     )
 
     env = gym.make("KinovaEnv")
     check_env(env)
 
-    model = PPO(
-        "MultiInputPolicy",
+    # model = PPO(
+    #     "MlpPolicy",
+    #     env,
+    #     verbose=1,
+    #     #learning_rate=linear_schedule(0.005,0.003),
+    #     #policy_kwargs=dict(net_arch=[128, 128]),
+    #     #learning_rate=0.001,
+    #     tensorboard_log="../logs/ppo_kinova/",
+    #     #n_steps=2048,
+    # )
+    model = SAC(
+        "MlpPolicy",
         env,
         verbose=1,
-        learning_rate=linear_schedule(0.005,0.003),
-        #learning_rate=0.001,
-        tensorboard_log="../logs/ppo_kinova/",
+        tensorboard_log="../logs/sac_kinova/",
     )
 
+    cb_keys = ["rew_dist","rew_vel_sq","rew_align","rew_gripper","rew_at_target"]
+
     try:
-        model.learn(total_timesteps=500_000)
+        model.learn(total_timesteps=500_000,callback=RewardPrintCallback(keys=cb_keys))
     except KeyboardInterrupt:
         print("Interrupted; saving now...")
     finally:
-        model.save("kinova_test_angle")
+        model.save("kinova_test_angle_sac")
 
 

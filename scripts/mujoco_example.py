@@ -1,7 +1,6 @@
 """rl_environment.xml helpers + minimal gripper oscillation viewer."""
 
 import math
-from pathlib import Path
 import time
 from pathlib import Path
 
@@ -56,6 +55,24 @@ def get_gripper_joints(m, d):
         val = d.joint(name).qpos[0]
         joint_values.append(val)
     return np.array(joint_values, dtype=float)
+
+def get_joint_velocities(m, d):
+    """
+    Current velocities for arm joints J0 - J5.
+
+    Args:
+        m: mujoco model
+        d: mujoco data
+
+    Returns:
+        np.array: Current velocities for arm joints J0 - J5
+    """
+    joint_velocities = []
+    for i in range(6):
+        name = f"J{i}"
+        vel = d.joint(name).qvel[0]
+        joint_velocities.append(vel)
+    return np.array(joint_velocities, dtype=float)
 
 def get_gripper_open_close(m, d):
     """

@@ -1,6 +1,6 @@
 import time
 import gymnasium as gym
-from stable_baselines3 import PPO
+from stable_baselines3 import PPO, SAC
 from gymnasium.envs.registration import register
 import mujoco
 import mujoco.viewer
@@ -16,7 +16,7 @@ if __name__ == "__main__":
 
     env = gym.make("KinovaEnv").unwrapped
     print(env)
-    model = PPO.load("kinova_test_angle")
+    model = SAC.load("kinova_test_angle_sac")
     obs, info = env.reset()
 
     with mujoco.viewer.launch_passive(env.model, env.data) as viewer:
