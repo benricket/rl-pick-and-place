@@ -16,7 +16,8 @@ if __name__ == "__main__":
 
     env = gym.make("KinovaEnv").unwrapped
     print(env)
-    model = SAC.load("kinova_test_angle_sac")
+    model = PPO.load("kinova_test_angle_ppo")
+    #model = PPO.load("backup_PPO_36")
     obs, info = env.reset()
 
     with mujoco.viewer.launch_passive(env.model, env.data) as viewer:

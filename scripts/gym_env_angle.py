@@ -1,14 +1,17 @@
 import numpy as np
 from pathlib import Path
 from typing import Optional, Callable
+import random
 
 import gymnasium as gym
 from gymnasium.envs.registration import register
 import mujoco
 import mujoco.viewer
-from mujoco_example import ee_to_block_pos, set_joints, get_joints, get_gripper_open_close, get_joint_velocities
+from mujoco_example import ee_to_block_pos, set_joints, get_joints, get_gripper_open_close, get_joint_velocities, get_joint_limits
 from stable_baselines3 import PPO, SAC
 from stable_baselines3.common.env_checker import check_env
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import BaseCallback
 from scipy.spatial.transform import Rotation
 
@@ -66,19 +69,23 @@ class ArmEnv(gym.Env):
             np.full(3, -np.pi,dtype=np.float32),      # ee_rot
             np.full(3, -5, dtype=np.float32),          # target_pos
             np.full(6, -np.pi, dtype=np.float32),      # joint_pos
-            np.full(6, -10, dtype=np.float32),          # joint_vel (clipped to 10)
-            np.array([0.0], dtype=np.float32),         # gripper_pos
-            np.array([0.0], dtype=np.float32),         # at_box
+            np.full(6, -np.pi, dtype=np.float32),          # joint to min
+            np.full(6, -np.pi, dtype=np.float32),         # joint to max
+            np.full(6, -10, dtype=np.float32),         # joint vel
+            np.array([0.0], dtype=np.float32),          # gripper
+            np.array([0.0], dtype=np.float32),          # at_box
         ])
 
         high = np.concatenate([
-            np.full(3, 5, dtype=np.float32),
-            np.full(3, np.pi, dtype=np.float32),
-            np.full(3, 5, dtype=np.float32),
-            np.full(6, np.pi, dtype=np.float32),
-            np.full(6, 10, dtype=np.float32),          # joint_vel
-            np.array([1.0], dtype=np.float32),
-            np.array([1.0], dtype=np.float32),
+            np.full(3, 5,dtype=np.float32),          # ee_pos
+            np.full(3, np.pi,dtype=np.float32),      # ee_rot
+            np.full(3, 5, dtype=np.float32),          # target_pos
+            np.full(6, np.pi, dtype=np.float32),      # joint_pos
+            np.full(6, np.pi, dtype=np.float32),          # joint to min
+            np.full(6, np.pi, dtype=np.float32),         # joint to max
+            np.full(6, 10, dtype=np.float32),         # joint vel
+            np.array([1.0], dtype=np.float32),          # gripper
+            np.array([1.0], dtype=np.float32),          # at_box
         ])
 
         self.observation_space = gym.spaces.Box(low, high, dtype=np.float32)
@@ -96,6 +103,8 @@ class ArmEnv(gym.Env):
         mujoco.mj_forward(self.model, self.data)
         self.iter_count = 0
         self.state = FIND_OBJECT
+
+        self.q_min,self.q_max = get_joint_limits()
 
         # attributes for reward func calculations
         self.last_ee_to_block_dist = np.linalg.norm(ee_to_block_pos(self.model,self.data))
@@ -123,12 +132,19 @@ class ArmEnv(gym.Env):
         self.ee_rotm = ee_rotm
         self.gripper = gripper
 
+        # distance to joint limits
+        q = get_joints(self.model,self.data)
+        q_to_min = q - self.q_min
+        q_to_max = self.q_max - q
+
         return np.concatenate([
             ee_pos,
+            ee_rot,
             block_pos,
             get_joints(self.model,self.data),
+            q_to_min,
+            q_to_max,
             get_joint_velocities(self.model,self.data),
-            ee_rot,
             np.array([gripper]),
             np.array([int(self.last_ee_to_block_dist < 0.03)])
         ]).astype(np.float32)
@@ -145,21 +161,37 @@ class ArmEnv(gym.Env):
         dist = ee_to_block_pos(self.model,self.data) # on the order of 0.4
         dist_norm = np.linalg.norm(dist)
         
-        #reward += 30.0 * (self.last_ee_to_block_dist - dist_norm)
-        dist_reward = -3.0 * dist_norm
+        progress_reward = 20.0 * (self.last_ee_to_block_dist - dist_norm) * 0
+        reward += progress_reward
+        info["rew_progress"] = progress_reward
+
+        dist_reward = -2.5 * dist_norm
         reward += dist_reward
         info["rew_dist"] = dist_reward
 
-        vel_reward = -1.0 * np.linalg.norm(self.joint_ctrl)**2
+        vel_reward = -0.05 * np.linalg.norm(self.joint_ctrl)**2 * 1
         reward += vel_reward
         info["rew_vel_sq"] = vel_reward 
 
         self.last_ee_to_block_dist = dist_norm
         rot_z = self.ee_rotm[:,2] # get third column
         cos_sim = np.dot(rot_z,dist) / dist_norm
-        align_reward = 0.05 * cos_sim
+        align_reward = 0.03 * cos_sim * 1
         reward += align_reward
         info["rew_align"] = align_reward
+
+        # penalize being near joint limits
+        lim_margin = 0.15  # radians
+
+        q = get_joints(self.model,self.data)
+        q_to_min = q - self.q_min
+        q_to_max = self.q_max - q
+
+        lower_violation = np.maximum(0.0, lim_margin - q_to_min)
+        upper_violation = np.maximum(0.0, lim_margin - q_to_max)
+
+        joint_limit_penalty = -0.05 * np.sum(lower_violation**2 + upper_violation**2)
+        reward += joint_limit_penalty
 
         # if dist_norm < 0.3:
         #     reward += 0.01
@@ -172,7 +204,7 @@ class ArmEnv(gym.Env):
         #     reward += 30 * self.gripper
         gripper_reward = 0.0
         if self.state == FIND_OBJECT:
-            gripper_reward = -0.1 * self.gripper
+            gripper_reward = -0.1 * self.gripper * 0
         reward += gripper_reward
         info["rew_gripper"] = gripper_reward
 
@@ -204,13 +236,38 @@ class ArmEnv(gym.Env):
         """
         super().reset(seed=seed)
         self.iter_count = 0
-        self.model = mujoco.MjModel.from_xml_path(str(XML_PATH))
-        self.data = mujoco.MjData(self.model)
+        #self.model = mujoco.MjModel.from_xml_path(str(XML_PATH))
+        #self.data = mujoco.MjData(self.model)
+        mujoco.mj_resetData(self.model, self.data)
+
+        block_angle = random.uniform(0,2*np.pi)
+        block_r = random.uniform(0.25,0.5)
+
+        block_x = block_r * np.cos(block_angle)
+        block_y = block_r * np.sin(block_angle)
+        
+        cube_jnt_id = mujoco.mj_name2id(
+            self.model,
+            mujoco.mjtObj.mjOBJ_JOINT,
+            "cube_free"
+        )
+
+        qpos_addr = self.model.jnt_qposadr[cube_jnt_id]
+
+        self.data.qpos[qpos_addr:qpos_addr + 7] = np.array([
+            block_x, block_y, 0.03,   # x, y, z
+            1.0, 0.0, 0.0, 0.0        # quaternion: qw, qx, qy, qz
+        ])
+
         mujoco.mj_forward(self.model, self.data)
         self.last_ee_to_block_dist = np.linalg.norm(ee_to_block_pos(self.model,self.data))
         self.gripper = 0.0
         self.state = FIND_OBJECT
         self.joint_ctrl = np.zeros(shape=(6,))
+
+        self.q_min = self.model.jnt_range[:6, 0]
+        self.q_max = self.model.jnt_range[:6, 1]
+
         obs = self._get_obs()
         info = self._get_info()
         return obs,info
@@ -232,6 +289,9 @@ class ArmEnv(gym.Env):
         gripper_ctrl = action[6]
         gripper_ctrl = np.interp(gripper_ctrl, [-1,1], [0,1])
 
+        ##### HARDCODED GRIPPER OPEN
+        gripper_ctrl = 1
+
         curr_joint_vals = get_joints(self.model,self.data)
         target_joint_vals = curr_joint_vals + joint_ctrl
         self.joint_ctrl = joint_ctrl
@@ -248,8 +308,8 @@ class ArmEnv(gym.Env):
         reward,info = self._compute_reward()
 
         term_reward = 0.0
-        if self.state == FIND_OBJECT and self.last_ee_to_block_dist < 0.01:
-            term_reward = 100.0 * (800 - self.iter_count) / 800
+        if self.state == FIND_OBJECT and self.last_ee_to_block_dist < 0.05:
+            term_reward = 5000.0 * (800 - self.iter_count) / 800
         reward += term_reward
         info["rew_at_target"] = term_reward
         #     self.state = FIND_GOAL
@@ -265,7 +325,7 @@ class ArmEnv(gym.Env):
         return obs, reward, terminated, truncated, info
 
 class RewardPrintCallback(BaseCallback):
-    def __init__(self, keys=None, print_every=200, verbose=0):
+    def __init__(self, keys=None, print_every=3_200, verbose=0):
         super().__init__(verbose)
         self.keys = keys
         self.buffer = {}
@@ -292,10 +352,13 @@ class RewardPrintCallback(BaseCallback):
         abs_rew_mean = np.sum([np.abs(val) for val in means.values()])
         for k, m in means.items():
             print(f"{k}: mean={m: .4f}, proportion={np.abs(m)/abs_rew_mean: .4f}")
+            self.logger.record(f"reward_terms/{k}_mean", m)
+            self.logger.record(f"reward_terms/{k}_proportion", np.abs(m)/abs_rew_mean)
         print("-" * 30)
 
         self.buffer.clear()
         self.last_print_step = self.num_timesteps
+
 
 if __name__ == "__main__":
 
@@ -304,34 +367,37 @@ if __name__ == "__main__":
         entry_point="gym_env_angle:ArmEnv",
         max_episode_steps=800,
     )
-
     env = gym.make("KinovaEnv")
     check_env(env)
 
-    # model = PPO(
-    #     "MlpPolicy",
-    #     env,
-    #     verbose=1,
-    #     #learning_rate=linear_schedule(0.005,0.003),
-    #     #policy_kwargs=dict(net_arch=[128, 128]),
-    #     #learning_rate=0.001,
-    #     tensorboard_log="../logs/ppo_kinova/",
-    #     #n_steps=2048,
-    # )
-    model = SAC(
+    env = DummyVecEnv([lambda: Monitor(gym.make("KinovaEnv"))])    
+    env = VecNormalize(env, norm_obs=True, norm_reward=True)
+
+    model = PPO(
         "MlpPolicy",
         env,
         verbose=1,
-        tensorboard_log="../logs/sac_kinova/",
+        #learning_rate=linear_schedule(0.005,0.003),
+        policy_kwargs=dict(net_arch=[512, 512, 512]),
+        learning_rate=0.000015,
+        tensorboard_log="../logs/ppo_kinova/",
+        #n_steps=2048,
     )
+    # model = SAC(
+    #     "MlpPolicy",
+    #     env,
+    #     verbose=1,
+    #     tensorboard_log="../logs/sac_kinova/",
+    # )
 
-    cb_keys = ["rew_dist","rew_vel_sq","rew_align","rew_gripper","rew_at_target"]
+    cb_keys = ["rew_dist","rew_vel_sq","rew_align","rew_gripper","rew_progress","rew_at_target"]
 
     try:
-        model.learn(total_timesteps=500_000,callback=RewardPrintCallback(keys=cb_keys))
+        #model.learn(total_timesteps=2_000_000,callback=RewardPrintCallback(keys={}))
+        model.learn(total_timesteps=3_000_000)
     except KeyboardInterrupt:
         print("Interrupted; saving now...")
     finally:
-        model.save("kinova_test_angle_sac")
+        model.save("kinova_test_angle_ppo")
 
 

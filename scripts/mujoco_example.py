@@ -20,6 +20,13 @@ SPEED = 1.2
 # list of finger joints, names used in the urdf file
 _FINGER = ("RIGHT_BOTTOM", "RIGHT_TIP", "LEFT_BOTTOM", "LEFT_TIP")
 
+def get_joint_limits():
+    """
+    Returns joint limits for the main joints
+    """
+    low = np.array([-2.69,-2.69,-2.69,-2.59,-2.57,-2.59])
+    high = low * -1
+    return low,high
 
 def get_joints(m, d):
     """
