@@ -2,6 +2,7 @@ import numpy as np
 from pathlib import Path
 from typing import Optional, Callable
 import random
+from datetime import datetime
 
 import gymnasium as gym
 from gymnasium.envs.registration import register
@@ -88,6 +89,7 @@ class ArmEnv(gym.Env):
             np.array([1.0], dtype=np.float32),          # at_box
         ])
 
+        self.random_level = 0
         self.observation_space = gym.spaces.Box(low, high, dtype=np.float32)
 
         # We output a desired pose, which the handling of the action will approximate given dt
@@ -112,6 +114,12 @@ class ArmEnv(gym.Env):
         self.gripper = 0.0
         self.joint_ctrl = np.zeros(shape=(6,))
         print(self.ee_rotm)
+    
+    def set_random_level(self, level):
+        """
+        Controls how difficult the task should be (how much the block can be moved)
+        """
+        self.random_level = level
 
     def _get_obs(self):
         # Maps environment state to the returned observation
@@ -165,7 +173,7 @@ class ArmEnv(gym.Env):
         reward += progress_reward
         info["rew_progress"] = progress_reward
 
-        dist_reward = -2.5 * dist_norm
+        dist_reward = -2.5 * dist_norm * 1
         reward += dist_reward
         info["rew_dist"] = dist_reward
 
@@ -190,7 +198,7 @@ class ArmEnv(gym.Env):
         lower_violation = np.maximum(0.0, lim_margin - q_to_min)
         upper_violation = np.maximum(0.0, lim_margin - q_to_max)
 
-        joint_limit_penalty = -0.05 * np.sum(lower_violation**2 + upper_violation**2)
+        joint_limit_penalty = -0.05 * np.sum(lower_violation**2 + upper_violation**2) * 1
         reward += joint_limit_penalty
 
         # if dist_norm < 0.3:
@@ -240,8 +248,8 @@ class ArmEnv(gym.Env):
         #self.data = mujoco.MjData(self.model)
         mujoco.mj_resetData(self.model, self.data)
 
-        block_angle = random.uniform(0,2*np.pi)
-        block_r = random.uniform(0.25,0.5)
+        block_angle = random.uniform(0,2*np.pi*self.random_level)
+        block_r = random.uniform(0.5-0.2*self.random_level,0.5+0.2*self.random_level)
 
         block_x = block_r * np.cos(block_angle)
         block_y = block_r * np.sin(block_angle)
@@ -361,6 +369,8 @@ class RewardPrintCallback(BaseCallback):
 
 
 if __name__ == "__main__":
+    now = datetime.now()
+    time_str = f"{now.year}-{now.month}-{now.day}-{now.hour}-{now.minute}-{now.second}"
 
     register(
         id="KinovaEnv",
@@ -372,6 +382,7 @@ if __name__ == "__main__":
 
     env = DummyVecEnv([lambda: Monitor(gym.make("KinovaEnv"))])    
     env = VecNormalize(env, norm_obs=True, norm_reward=True)
+    env.env_method("set_random_level", 0)
 
     model = PPO(
         "MlpPolicy",
@@ -380,24 +391,22 @@ if __name__ == "__main__":
         #learning_rate=linear_schedule(0.005,0.003),
         policy_kwargs=dict(net_arch=[512, 512, 512]),
         learning_rate=0.000015,
-        tensorboard_log="../logs/ppo_kinova/",
+        tensorboard_log=f"../logs/ppo_kinova_{time_str}/",
         #n_steps=2048,
     )
-    # model = SAC(
-    #     "MlpPolicy",
-    #     env,
-    #     verbose=1,
-    #     tensorboard_log="../logs/sac_kinova/",
-    # )
 
     cb_keys = ["rew_dist","rew_vel_sq","rew_align","rew_gripper","rew_progress","rew_at_target"]
 
     try:
         #model.learn(total_timesteps=2_000_000,callback=RewardPrintCallback(keys={}))
-        model.learn(total_timesteps=3_000_000)
+        model.learn(total_timesteps=300_000,callback=RewardPrintCallback(keys=cb_keys))
+        env.env_method("set_random_level", 0.2)
+        model.learn(total_timesteps=500_000,callback=RewardPrintCallback(keys=cb_keys))
+        env.env_method("set_random_level", 0.5)
+        model.learn(total_timesteps=500_00,callback=RewardPrintCallback(keys=cb_keys))
     except KeyboardInterrupt:
         print("Interrupted; saving now...")
     finally:
-        model.save("kinova_test_angle_ppo")
+        model.save(f"kinova_{time_str}")
 
 
