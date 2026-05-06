@@ -1,20 +1,21 @@
+"""
+Script to load a trained model and train it further (fine tuning)
+"""
+from datetime import datetime
+from pathlib import Path
 import gymnasium as gym
 from gymnasium.envs.registration import register
 from gymnasium.wrappers import TimeLimit
-from datetime import datetime
-from pathlib import Path
-from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
-
 from stable_baselines3 import PPO
-from stable_baselines3.common.env_checker import check_env
-from stable_baselines3.common.env_util import make_vec_env
-from stable_baselines3.common.vec_env import VecNormalize, SubprocVecEnv
-from gym_env_angle import linear_schedule
-from gym_env_angle import ArmEnv, RewardPrintCallback
+from stable_baselines3.common.vec_env import VecNormalize, DummyVecEnv
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.utils import constant_fn
+from gym_env_angle import ArmEnv, RewardPrintCallback
 
 def make_env():
+    """
+    Wrapper function to return the env wrapped in a time limit
+    """ 
     return TimeLimit(ArmEnv(), max_episode_steps=1200)
 
 if __name__ == "__main__":
@@ -36,6 +37,7 @@ if __name__ == "__main__":
     base_env = raw_env.envs[0].unwrapped
 
     try:
+        # If normalization constants were saved, use those
         env = VecNormalize.load(str(vecnorm_path), raw_env)
         env.training = True
         env.norm_reward = True
@@ -46,6 +48,7 @@ if __name__ == "__main__":
     
     model = PPO.load(m_filename,env=env)
 
+    # Adjust model parameters if desired
     model.learning_rate = 4e-5
     model.lr_schedule = constant_fn(4e-5)
     model.clip_range = constant_fn(0.2)
@@ -54,19 +57,28 @@ if __name__ == "__main__":
     model.batch_size = 256
     model.n_steps = 1024
 
+    # Train the model and log the provided reward function contributions
     cb_keys = ["rew_dist","rew_vel_sq","rew_align","rew_gripper","rew_progress","rew_at_target"]
-    log_name = "ppo_finetune_n8_cr0.2_ent.005_rand0.4"
+    log_name = f"ppo_finetune_n8_cr0.2_ent.005_rand0.4_time{time_str}"
     try:
-        #model.learn(total_timesteps=2_000_000,callback=RewardPrintCallback(keys={}))
+        # Currently set to curriculum learning --- increase task difficulty over time
         env.env_method("set_random_level", 0.2)
-        model.learn(total_timesteps=2_000_000,callback=RewardPrintCallback(keys=cb_keys),tb_log_name=log_name)
+        model.learn(total_timesteps=1_000_000,callback=RewardPrintCallback(keys=cb_keys),tb_log_name=log_name)
+        env.save(f"vecnorm_{time_str}.pkl")
+        env.env_method("set_random_level", 0.25)
+        model.learn(total_timesteps=1_000_000,callback=RewardPrintCallback(keys=cb_keys),tb_log_name=log_name,
+            reset_num_timesteps=False)
         env.save(f"vecnorm_{time_str}.pkl")
         env.env_method("set_random_level", 0.3)
-        model.learn(total_timesteps=2_000_000,callback=RewardPrintCallback(keys=cb_keys),tb_log_name=log_name,
+        model.learn(total_timesteps=1_000_000,callback=RewardPrintCallback(keys=cb_keys),tb_log_name=log_name,
+            reset_num_timesteps=False)
+        env.save(f"vecnorm_{time_str}.pkl")
+        env.env_method("set_random_level", 0.35)
+        model.learn(total_timesteps=1_000_000,callback=RewardPrintCallback(keys=cb_keys),tb_log_name=log_name,
             reset_num_timesteps=False)
         env.save(f"vecnorm_{time_str}.pkl")
         env.env_method("set_random_level", 0.4)
-        model.learn(total_timesteps=2_000_000,callback=RewardPrintCallback(keys=cb_keys),tb_log_name=log_name,
+        model.learn(total_timesteps=1_000_000,callback=RewardPrintCallback(keys=cb_keys),tb_log_name=log_name,
             reset_num_timesteps=False)
         env.save(f"vecnorm_{time_str}.pkl")
     except KeyboardInterrupt:

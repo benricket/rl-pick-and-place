@@ -151,6 +151,8 @@ if __name__ == "__main__":
     model = mujoco.MjModel.from_xml_path(str(XML_PATH))
     data = mujoco.MjData(model)
 
+    print(f"timestep: {model.opt.timestep}")
+
     with mujoco.viewer.launch_passive(model, data) as viewer:
         while viewer.is_running():
             step_start = time.time()
