@@ -1,20 +1,23 @@
-import numpy as np
+"""
+Defines the RL environment for the Kinova arm taking actions in joint space
+"""
 from pathlib import Path
 from typing import Optional, Callable
-import random
 from datetime import datetime
 
+import numpy as np
 import gymnasium as gym
 from gymnasium.envs.registration import register
 import mujoco
 import mujoco.viewer
-from mujoco_example import ee_to_block_pos, set_joints, get_joints, get_gripper_open_close, get_joint_velocities, get_joint_limits
-from stable_baselines3 import PPO, SAC
+from stable_baselines3 import PPO
 from stable_baselines3.common.env_checker import check_env
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import BaseCallback
 from scipy.spatial.transform import Rotation
+from mujoco_example import ee_to_block_pos, set_joints, get_joints, get_gripper_open_close, get_joint_velocities, get_joint_limits
+
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 XML_PATH = (SCRIPT_DIR.parent / "rl_environment.xml").resolve()
@@ -23,23 +26,36 @@ FIND_OBJECT = 0
 FIND_GOAL = 1
 
 def rotm_to_euler(rotm):
+    """
+    Converts a rotation matrix to Euler angles in radians
+    Args:
+        rotm (np.ndarray): rotation matrix input
+
+    Returns: 
+        Array of Euler angles in radians
+    """
     rot = Rotation.from_matrix(rotm)
     return rot.as_euler('zxy',degrees=False)
 
 def linear_schedule(initial_value: float, final_value: float) -> Callable[[float], float]:
     """
-    Linear learning rate schedule.
+    Defines a linear learning rate schedule.
 
-    param initial_value: Initial learning rate.
-    return: schedule that computes
-      current learning rate depending on remaining progress
+    Args: 
+        initial_value (float): Initial learning rate
+        final_value (float): Final learning rate
+
+    Returns:
+        A callable function that computes the learning rate given the proportion 
+        progress remaining as a float
     """
     def func(progress_remaining: float) -> float:
         """
-        Progress will decrease from 1 (beginning) to 0.
+        Function mapping progress remaining to learning rate
 
-        param progress_remaining:
-        return: current learning rate
+        Args: 
+            progress_remainin (float): proportion of progress remaining
+        Returns: current learning rate
         """
         return progress_remaining * (initial_value - final_value) + final_value
 
@@ -52,19 +68,7 @@ class ArmEnv(gym.Env):
     def __init__(self):
         # Initialize environment
 
-        # Holds pose of end effector, target (block to pick up) and goal (block to set the target on)
-        # self.observation_space = gym.spaces.Dict(
-        #     {
-        #         "ee_pos": gym.spaces.Box(-5, 5, shape=(3,), dtype=float),  # x,y,z
-        #         "ee_rot": gym.spaces.Box(-np.pi, np.pi, shape=(3,), dtype=float),  # rot_z,rot_x,rot_y
-        #         "target_pos": gym.spaces.Box(-5, 5, shape=(3,), dtype=float),  # x,y,z
-        #         "joint_pos": gym.spaces.Box(-np.pi, np.pi, shape=(6,), dtype=float),
-        #         "joint_vel": gym.spaces.Box(-np.inf,np.inf, shape=(6,), dtype=float),
-        #         "gripper_pos": gym.spaces.Box(0,1, shape=(1,), dtype=float),
-        #         "at_box": gym.spaces.Discrete(2),
-        #     }
-        # )
-
+        # Define bounds for observation space
         low = np.concatenate([
             np.full(3, -5,dtype=np.float32),          # ee_pos
             np.full(3, -np.pi,dtype=np.float32),      # ee_rot
@@ -89,17 +93,18 @@ class ArmEnv(gym.Env):
             np.array([1.0], dtype=np.float32),          # at_box
         ])
 
-        self.random_level = 0
+        self.random_level = 0 # how large the space is that the target box can be spawned in
         self.observation_space = gym.spaces.Box(low, high, dtype=np.float32)
 
         # We output a desired pose, which the handling of the action will approximate given dt
         self.action_space = gym.spaces.Box(
             low=-1.0,
             high=1.0,
-            shape=(7,),   # 7 joints + 1 gripper
+            shape=(7,),   # 6 joints + 1 gripper
             dtype=np.float32,
         )
 
+        # Initialize simulation
         self.model = mujoco.MjModel.from_xml_path(str(XML_PATH))
         self.data = mujoco.MjData(self.model)
         mujoco.mj_forward(self.model, self.data)
@@ -110,6 +115,7 @@ class ArmEnv(gym.Env):
 
         # attributes for reward func calculations
         self.last_ee_to_block_dist = np.linalg.norm(ee_to_block_pos(self.model,self.data))
+        self.ee_alignment = 0.0
         self.ee_rotm = np.eye(3).flatten()
         self.gripper = 0.0
         self.joint_ctrl = np.zeros(shape=(6,))
@@ -118,10 +124,18 @@ class ArmEnv(gym.Env):
     def set_random_level(self, level):
         """
         Controls how difficult the task should be (how much the block can be moved)
+        0 means the block will be in the same place, 1 means the block will be between 
+        [0,2pi] angle and [0.3,0.7] distance, with linear interpolation in between.
+
+        Args:
+            level (float): float to set the random level to, [0,1]
         """
         self.random_level = level
 
     def _get_obs(self):
+        """
+        Return an observation from the environment
+        """
         # Maps environment state to the returned observation
         obs = {}
         block_name = 'cube'
@@ -146,22 +160,28 @@ class ArmEnv(gym.Env):
         q_to_max = self.q_max - q
 
         return np.concatenate([
-            ee_pos,
-            ee_rot,
-            block_pos,
-            get_joints(self.model,self.data),
-            q_to_min,
-            q_to_max,
-            get_joint_velocities(self.model,self.data),
-            np.array([gripper]),
-            np.array([int(self.last_ee_to_block_dist < 0.03)])
+            ee_pos, # position of EE
+            ee_rot, # rotation matrix of EE
+            block_pos, # block position in Cartesian coords
+            get_joints(self.model,self.data), # joint angles
+            q_to_min, # how far joint angles are from min
+            q_to_max, # how far joint angles are from max
+            get_joint_velocities(self.model,self.data), # joint velocities
+            np.array([gripper]), # if the gripper is closed or open
+            np.array([int(self.last_ee_to_block_dist < 0.03)]) # if we're very near the block
         ]).astype(np.float32)
 
     def _get_info(self):
-        # gets auxiliary info for debugging
+        # gets auxiliary info for debugging (nothing yet)
         return {}
 
     def _compute_reward(self):
+        """
+        Get the reward from a given state
+
+        Returns:
+            reward (float) judging the value of the environment state after the last action
+        """
         reward = 0.0
         info = {}
 
@@ -169,22 +189,23 @@ class ArmEnv(gym.Env):
         dist = ee_to_block_pos(self.model,self.data) # on the order of 0.4
         dist_norm = np.linalg.norm(dist)
         
-        progress_reward = 20.0 * (self.last_ee_to_block_dist - dist_norm) * 0
+        progress_reward = 100.0 * (self.last_ee_to_block_dist - dist_norm)
         reward += progress_reward
         info["rew_progress"] = progress_reward
 
-        dist_reward = -2.5 * dist_norm * 1
+        dist_reward = -2.5 * dist_norm
         reward += dist_reward
         info["rew_dist"] = dist_reward
 
-        vel_reward = -0.05 * np.linalg.norm(self.joint_ctrl)**2 * 1
+        vel_reward = -0.05 * np.linalg.norm(self.joint_ctrl)**2
         reward += vel_reward
-        info["rew_vel_sq"] = vel_reward 
+        info["rew_vel_sq"] = vel_reward
 
         self.last_ee_to_block_dist = dist_norm
         rot_z = self.ee_rotm[:,2] # get third column
         cos_sim = np.dot(rot_z,dist) / dist_norm
-        align_reward = 0.03 * cos_sim * 1
+        self.ee_alignment = cos_sim
+        align_reward = 0.03 * cos_sim
         reward += align_reward
         info["rew_align"] = align_reward
 
@@ -201,6 +222,7 @@ class ArmEnv(gym.Env):
         joint_limit_penalty = -0.05 * np.sum(lower_violation**2 + upper_violation**2) * 1
         reward += joint_limit_penalty
 
+        # Boost reward near the block --- disabled for now
         # if dist_norm < 0.3:
         #     reward += 0.01
         #     if dist_norm < 0.1:
@@ -231,25 +253,29 @@ class ArmEnv(gym.Env):
         return False
     
     def _is_terminated(self):
+        """
+        Return True if the block is close enough (within 0.05)
+        """
         dist_norm = self.last_ee_to_block_dist
         if dist_norm < 0.05:
             return True
-        if self.state == FIND_OBJECT or self.gripper < 0.5:
-            return False
         return False
     
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
         """
-        Starts a new episode
+        Starts a new episode, resets the simulation
         """
         super().reset(seed=seed)
         self.iter_count = 0
-        #self.model = mujoco.MjModel.from_xml_path(str(XML_PATH))
-        #self.data = mujoco.MjData(self.model)
         mujoco.mj_resetData(self.model, self.data)
 
-        block_angle = random.uniform(0,2*np.pi*self.random_level)
-        block_r = random.uniform(0.5-0.2*self.random_level,0.5+0.2*self.random_level)
+        # Use gymnasium random for setting the block position
+        # This behaves properly with the environment seed
+        block_angle = self.np_random.uniform(0, 2*np.pi*self.random_level)
+        block_r = self.np_random.uniform(
+            0.5 - 0.2*self.random_level,
+            0.5 + 0.2*self.random_level
+        )
 
         block_x = block_r * np.cos(block_angle)
         block_y = block_r * np.sin(block_angle)
@@ -271,6 +297,7 @@ class ArmEnv(gym.Env):
         self.last_ee_to_block_dist = np.linalg.norm(ee_to_block_pos(self.model,self.data))
         self.gripper = 0.0
         self.state = FIND_OBJECT
+        self.ee_alignment = 0.0
         self.joint_ctrl = np.zeros(shape=(6,))
 
         self.q_min = self.model.jnt_range[:6, 0]
@@ -283,13 +310,19 @@ class ArmEnv(gym.Env):
     def step(self, action):
         """
         Update step of the simulation with the given action
+
+        Args:
+            action (np.ndarray): 7-element array of 6 joint changes plus a gripper control
+                scaled from -1 to 1
         """
         reward = 0
         obs = 0
         terminated = False
         truncated = False
 
-        max_joint_change = 0.2 # rad
+        max_joint_speed = 3.0 # rad/s, taken roughly from Kinova docs
+        control_dt = self.model.opt.timestep * 5 # time per each model step
+        max_joint_change = max_joint_speed * control_dt
 
         # Apply action
         joint_ctrl = action[0:6]
@@ -315,9 +348,10 @@ class ArmEnv(gym.Env):
         # Get reward
         reward,info = self._compute_reward()
 
+        # Reward for termination, based on how early it occurs
         term_reward = 0.0
         if self.state == FIND_OBJECT and self.last_ee_to_block_dist < 0.05:
-            term_reward = 5000.0 * (800 - self.iter_count) / 800
+            term_reward = 500.0 * (800 - self.iter_count) / 800
         reward += term_reward
         info["rew_at_target"] = term_reward
         #     self.state = FIND_GOAL
@@ -325,15 +359,23 @@ class ArmEnv(gym.Env):
         # Check termination
         truncated = self._is_truncated()
         terminated = self._is_terminated()
-        #if terminated:
-        #    reward += 5000.0 * (800 - self.iter_count) / 800
 
         self.iter_count += 1
 
         return obs, reward, terminated, truncated, info
 
 class RewardPrintCallback(BaseCallback):
+    """
+    Callback for logging custom metrics during training
+    """
     def __init__(self, keys=None, print_every=3_200, verbose=0):
+        """
+        Initialize the callback
+
+        Args:
+            keys (dict): What keys in info{} to log the value of 
+            print_every (int): How many timesteps to print logged values after
+        """
         super().__init__(verbose)
         self.keys = keys
         self.buffer = {}
@@ -343,6 +385,7 @@ class RewardPrintCallback(BaseCallback):
     def _on_step(self) -> bool:
         infos = self.locals.get("infos", [])
 
+        # Log all specified keys into the buffer
         for info in infos:
             for k in self.keys:
                 if k in info:
@@ -351,6 +394,7 @@ class RewardPrintCallback(BaseCallback):
         return True
 
     def _on_rollout_end(self) -> None:
+        # Print values if enough timesteps have elapsed
         if self.num_timesteps - self.last_print_step < self.print_every:
             return
         print("\n[Reward terms over rollout]")
@@ -375,38 +419,52 @@ if __name__ == "__main__":
     register(
         id="KinovaEnv",
         entry_point="gym_env_angle:ArmEnv",
-        max_episode_steps=800,
+        max_episode_steps=1200,
     )
     env = gym.make("KinovaEnv")
     check_env(env)
 
     env = DummyVecEnv([lambda: Monitor(gym.make("KinovaEnv"))])    
     env = VecNormalize(env, norm_obs=True, norm_reward=True)
-    env.env_method("set_random_level", 0)
-
+    
+    # Define PPO parameters
     model = PPO(
         "MlpPolicy",
         env,
         verbose=1,
-        #learning_rate=linear_schedule(0.005,0.003),
-        policy_kwargs=dict(net_arch=[512, 512, 512]),
-        learning_rate=0.000015,
-        tensorboard_log=f"../logs/ppo_kinova_{time_str}/",
+        device='cpu',
+        policy_kwargs=dict(net_arch=[256, 256]),
+        learning_rate=0.0004,
+        ent_coef=0.0,
+        clip_range=0.1,
+        tensorboard_log=f"../logs/ppo_kinova_{time_str}_curriculum_smalldelta_2x256/",
         #n_steps=2048,
     )
 
     cb_keys = ["rew_dist","rew_vel_sq","rew_align","rew_gripper","rew_progress","rew_at_target"]
-
+    log_name = "ppo_curriculum_progress_weight"
     try:
-        #model.learn(total_timesteps=2_000_000,callback=RewardPrintCallback(keys={}))
-        model.learn(total_timesteps=300_000,callback=RewardPrintCallback(keys=cb_keys))
-        env.env_method("set_random_level", 0.2)
-        model.learn(total_timesteps=500_000,callback=RewardPrintCallback(keys=cb_keys))
+        env.env_method("set_random_level", 0)
+        model.learn(total_timesteps=800_000,callback=RewardPrintCallback(keys=cb_keys),tb_log_name=log_name)
+        env.env_method("set_random_level", 0.02)
+        model.learn(total_timesteps=800_000,callback=RewardPrintCallback(keys=cb_keys),tb_log_name=log_name,
+            reset_num_timesteps=False)
+        env.env_method("set_random_level", 0.07)
+        model.learn(total_timesteps=500_000,callback=RewardPrintCallback(keys=cb_keys),tb_log_name=log_name,
+            reset_num_timesteps=False)
+        env.env_method("set_random_level", 0.15)
+        model.learn(total_timesteps=500_000,callback=RewardPrintCallback(keys=cb_keys),tb_log_name=log_name,
+            reset_num_timesteps=False)
+        env.env_method("set_random_level", 0.25)
+        model.learn(total_timesteps=500_000,callback=RewardPrintCallback(keys=cb_keys),tb_log_name=log_name,
+            reset_num_timesteps=False)
         env.env_method("set_random_level", 0.5)
-        model.learn(total_timesteps=500_00,callback=RewardPrintCallback(keys=cb_keys))
+        model.learn(total_timesteps=500_000,callback=RewardPrintCallback(keys=cb_keys),tb_log_name=log_name,
+            reset_num_timesteps=False)
     except KeyboardInterrupt:
         print("Interrupted; saving now...")
     finally:
         model.save(f"kinova_{time_str}")
+        env.save(f"vecnorm_{time_str}.pkl")
 
 
